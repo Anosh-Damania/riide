@@ -1,0 +1,125 @@
+use std::path::PathBuf;
+
+use crate::editor::buffer::Buffer;
+use crate::io::fs::{FileSystemOps, RealFileSystem};
+use crate::state::error::ErrorState;
+use crate::state::workspace::WorkspaceState;
+use crate::ui::central_panel::{self, EditorEvent};
+use crate::ui::side_panel::{self, ExplorerEvent};
+
+/// The root application struct. Owns all state, I/O, and orchestrates
+/// the UI rendering loop through an event-driven pattern.
+pub struct RiideApp {
+    workspace: WorkspaceState,
+    buffer: Buffer,
+    errors: ErrorState,
+    fs: RealFileSystem,
+}
+
+impl Default for RiideApp {
+    fn default() -> Self {
+        Self {
+            workspace: WorkspaceState::new(
+                std::env::current_dir().unwrap_or_default(),
+            ),
+            buffer: Buffer::new(),
+            errors: ErrorState::default(),
+            fs: RealFileSystem,
+        }
+    }
+}
+
+impl eframe::App for RiideApp {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // 1. Prune expired error messages
+        let now = ctx.input(|i| i.time);
+        self.errors.update(now);
+
+        // 2. Render error popup (if any active)
+        for msg in self.errors.active() {
+            egui::Window::new("Error")
+                .collapsible(false)
+                .resizable(false)
+                .title_bar(false)
+                .fixed_pos(egui::Pos2::new(300.0, 30.0))
+                .show(ctx, |ui| {
+                    ui.label(egui::RichText::new(msg).color(egui::Color32::RED));
+                });
+        }
+
+        // 3. Pre-compute directory listing for the side panel
+        let entries = match self.fs.read_dir_entries(self.workspace.current_dir()) {
+            Ok(entries) => entries,
+            Err(e) => {
+                self.errors.push(e);
+                Vec::new()
+            }
+        };
+
+        // 4. Side panel — capture explorer event
+        let explorer_event = egui::SidePanel::left("file_explorer_panel")
+            .resizable(true)
+            .default_width(250.0)
+            .show(ctx, |ui| {
+                ui.heading("File Explorer");
+                ui.separator();
+                side_panel::render_file_explorer(&mut self.workspace, &entries, ui)
+            })
+            .inner;
+
+        // 5. Central panel — capture editor event
+        let editor_event = egui::CentralPanel::default().show(ctx, |ui| {
+            central_panel::render_editor(&mut self.buffer, ctx, ui)
+        })
+        .inner;
+
+        // 6. Process side panel events (file system operations)
+        if let Some(event) = explorer_event {
+            match event {
+                ExplorerEvent::NavigateTo(path) => {
+                    self.workspace.navigate_to(path);
+                }
+                ExplorerEvent::OpenFile(path) => {
+                    match self.fs.read_file(&path) {
+                        Ok(content) => {
+                            self.buffer.load(content, path.clone());
+                            self.workspace.set_active_file(path);
+                        }
+                        Err(e) => self.errors.push(e),
+                    }
+                }
+                ExplorerEvent::GoToParent => {
+                    if let Some(parent) = self.workspace.current_dir().parent() {
+                        self.workspace.navigate_to(parent.to_path_buf());
+                    }
+                }
+            }
+        }
+
+        // 7. Process editor events (file system operations)
+        if let Some(event) = editor_event {
+            match event {
+                EditorEvent::SaveFile => {
+                    let path: PathBuf = match self.buffer.path() {
+                        Some(p) => p.clone(),
+                        None => {
+                            self.errors.push("No file is currently open for saving.");
+                            return;
+                        }
+                    };
+                    match self.fs.write_file(&path, self.buffer.content()) {
+                        Ok(()) => {
+                            self.errors
+                                .push_with_expiry(format!("✅ File saved: {}", path.display()), now);
+                        }
+                        Err(e) => self.errors.push(e),
+                    }
+                }
+            }
+        }
+    }
+
+    fn save(&mut self, _storage: &mut dyn eframe::Storage) {
+        // Called on app close — nothing special to save here yet
+    }
+}
