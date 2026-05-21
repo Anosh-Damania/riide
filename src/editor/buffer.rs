@@ -6,6 +6,7 @@ use std::path::PathBuf;
 pub struct Buffer {
     content: String,
     path: Option<PathBuf>,
+    is_dirty: bool,
 }
 
 impl Buffer {
@@ -14,6 +15,7 @@ impl Buffer {
         Self {
             content: String::new(),
             path: None,
+            is_dirty: false,
         }
     }
 
@@ -21,6 +23,7 @@ impl Buffer {
     pub fn load(&mut self, content: String, path: PathBuf) {
         self.content = content;
         self.path = Some(path);
+        self.is_dirty = false;
     }
 
     /// Clear the buffer content and path.
@@ -28,6 +31,7 @@ impl Buffer {
     pub fn clear(&mut self) {
         self.content.clear();
         self.path = None;
+        self.is_dirty = false;
     }
 
     /// The buffer's current text content.
@@ -41,6 +45,7 @@ impl Buffer {
     }
 
     /// The path associated with this buffer, if any.
+    #[allow(dead_code)]
     pub fn path(&self) -> Option<&PathBuf> {
         self.path.as_ref()
     }
@@ -49,5 +54,20 @@ impl Buffer {
     #[allow(dead_code)]
     pub fn is_active(&self) -> bool {
         self.path.is_some()
+    }
+
+    /// Mark the buffer as having unsaved changes.
+    pub fn mark_dirty(&mut self) {
+        self.is_dirty = true;
+    }
+
+    /// Mark the buffer as clean (e.g. after saving).
+    pub fn clear_dirty(&mut self) {
+        self.is_dirty = false;
+    }
+
+    /// Returns true if the buffer has unsaved changes.
+    pub fn is_dirty(&self) -> bool {
+        self.is_dirty
     }
 }

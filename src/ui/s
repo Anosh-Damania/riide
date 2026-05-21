@@ -54,8 +54,7 @@ fn render_tree_entry(
 ) -> Option<ExplorerEvent> {
     if entry.is_dir {
         let expanded = workspace.is_expanded(&entry.path);
-
-        let mut child_event: Option<ExplorerEvent> = None;
+        let mut ev: Option<ExplorerEvent> = None;
 
         let response = egui::CollapsingHeader::new(&entry.name)
             .id_source(&entry.path)
@@ -63,17 +62,17 @@ fn render_tree_entry(
             .show(ui, |ui| {
                 for child in &entry.children {
                     if let Some(e) = render_tree_entry(child, workspace, ui) {
-                        child_event = Some(e);
+                        ev = e;
                     }
                 }
             });
 
-        // If the user clicked the header, toggle expansion — takes priority
+        // If the user clicked the header, toggle expansion
         if response.header_response.clicked() {
             return Some(ExplorerEvent::ToggleDir(entry.path.clone()));
         }
 
-        child_event
+        ev
     } else {
         let label = egui::RichText::new(format!("📄  {}", entry.name));
         if ui
