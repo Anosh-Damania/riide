@@ -6,6 +6,7 @@ use crate::state::workspace::WorkspaceState;
 /// Events that can be emitted by the central editor panel.
 pub enum EditorEvent {
     SaveFile,
+    StartLsp,
     SwitchTab(PathBuf),
     CloseTab(PathBuf),
 }
@@ -79,9 +80,14 @@ pub fn render_editor(
     // Text editor for the active buffer
     if let Some(active_path) = workspace.active_file_path.clone() {
         if let Some(buffer) = buffers.get_mut(&active_path) {
-            if ui.button("Save").clicked() {
-                event = Some(EditorEvent::SaveFile);
-            }
+            ui.horizontal(|ui| {
+                if ui.button("Save").clicked() {
+                    event = Some(EditorEvent::SaveFile);
+                }
+                if ui.button("Start LSP").clicked() {
+                    event = Some(EditorEvent::StartLsp);
+                }
+            });
             egui::ScrollArea::vertical().show(ui, |ui| {
                 let response = ui.add_sized(
                     ui.available_size(),

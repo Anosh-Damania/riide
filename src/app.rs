@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use crate::editor::buffer_manager::BufferManager;
 use crate::io::fs::{FileSystemOps, RealFileSystem};
+use crate::io::lsp;
 use crate::io::terminal;
 use crate::state::error::ErrorState;
 use crate::state::workspace::WorkspaceState;
@@ -20,6 +21,7 @@ pub struct RiideApp {
     terminal_output: Vec<String>,
     terminal_rx: Option<std::sync::mpsc::Receiver<String>>,
     terminal_input: String,
+    lsp_client: Option<lsp::LspClient>,
 }
 
 impl Default for RiideApp {
@@ -33,6 +35,7 @@ impl Default for RiideApp {
             terminal_output: Vec::new(),
             terminal_rx: None,
             terminal_input: String::new(),
+            lsp_client: None,
         };
         app.rebuild_dir_tree();
         app
@@ -106,6 +109,41 @@ impl eframe::App for RiideApp {
             }
         }
 
+        // Drain any pending LSP responses from the language server
+        if let Some(ref client) = self.lsp_client {
+            let mut new_output = false;
+            loop {
+                match client.rx.try_recv() {
+                    Ok(line) => {
+                        // Parse into serde_json::Value for future routing
+                        match serde_json::from_str::<serde_json::Value>(&line) {
+                            Ok(_) => {
+                                self.terminal_output
+                                    .push(format!("[LSP] Received: {}", line));
+                                new_output = true;
+                            }
+                            Err(_) => {
+                                // Malformed JSON — still log it for debugging
+                                self.terminal_output
+                                    .push(format!("[LSP] Malformed: {}", line));
+                                new_output = true;
+                            }
+                        }
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        self.terminal_output
+                            .push("[LSP] ERROR: Server disconnected!".to_string());
+                        new_output = true;
+                        break;
+                    }
+                }
+            }
+            if new_output {
+                ctx.request_repaint();
+            }
+        }
+
         for msg in self.errors.active() {
             egui::Window::new("Error")
                 .collapsible(false)
@@ -138,13 +176,11 @@ impl eframe::App for RiideApp {
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
                         if ui.button("Save").clicked() {
-                            let content = self
-                                .buffers
-                                .get_mut(pending_path)
-                                .map(|b| b.content().to_string())
-                                .unwrap_or_default();
-                            if let Err(e) = self.fs.write_file(pending_path, &content) {
-                                self.errors.push(e);
+                            if let Some(buf) = self.buffers.get_mut(pending_path) {
+                                buf.sync_to_rope();
+                                if let Err(e) = self.fs.write_file(pending_path, &buf.rope) {
+                                    self.errors.push(e);
+                                }
                             }
                             self.buffers.remove(pending_path);
                             self.workspace.close_tab(pending_path);
@@ -195,8 +231,8 @@ impl eframe::App for RiideApp {
                 ExplorerEvent::OpenFile(path) => {
                     if !self.buffers.contains(&path) {
                         match self.fs.read_file(&path) {
-                            Ok(content) => {
-                                self.buffers.load(path.clone(), content);
+                            Ok(rope) => {
+                                self.buffers.load(path.clone(), rope);
                             }
                             Err(e) => {
                                 self.errors.push(e);
@@ -221,6 +257,25 @@ impl eframe::App for RiideApp {
 
         if let Some(event) = editor_event {
             match event {
+                EditorEvent::StartLsp => {
+                    self.terminal_output
+                        .push("Starting rust-analyzer...".to_string());
+                    let mut client = lsp::LspClient::start("rust-analyzer");
+
+                    // Send initialize request
+                    client.send_request(
+                        "initialize",
+                        serde_json::json!({
+                            "processId": null,
+                            "rootUri": null,
+                            "capabilities": {}
+                        }),
+                    );
+
+                    self.terminal_output
+                        .push("[LSP] Sent initialize request".to_string());
+                    self.lsp_client = Some(client);
+                }
                 EditorEvent::SaveFile => {
                     let path: PathBuf = match self.workspace.active_file_path() {
                         Some(p) => p.clone(),
@@ -229,23 +284,24 @@ impl eframe::App for RiideApp {
                             return;
                         }
                     };
-                    let content = match self.buffers.get_mut(&path) {
-                        Some(buf) => buf.content().to_string(),
+                    match self.buffers.get_mut(&path) {
+                        Some(buf) => {
+                            buf.sync_to_rope();
+                            match self.fs.write_file(&path, &buf.rope) {
+                                Ok(()) => {
+                                    buf.clear_dirty();
+                                    self.errors.push_with_expiry(
+                                        format!("File saved: {}", path.display()),
+                                        now,
+                                    );
+                                }
+                                Err(e) => self.errors.push(e),
+                            }
+                        }
                         None => {
                             self.errors.push("Buffer not found for the active file.");
                             return;
                         }
-                    };
-                    match self.fs.write_file(&path, &content) {
-                        Ok(()) => {
-                            // Mark the buffer as clean after successful save
-                            if let Some(buf) = self.buffers.get_mut(&path) {
-                                buf.clear_dirty();
-                            }
-                            self.errors
-                                .push_with_expiry(format!("File saved: {}", path.display()), now);
-                        }
-                        Err(e) => self.errors.push(e),
                     }
                 }
                 EditorEvent::SwitchTab(path) => {

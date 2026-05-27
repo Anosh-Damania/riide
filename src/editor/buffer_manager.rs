@@ -29,9 +29,9 @@ impl BufferManager {
     }
 
     /// Load content into a buffer, creating it if it doesn't exist.
-    pub fn load(&mut self, path: PathBuf, content: String) {
+    pub fn load(&mut self, path: PathBuf, rope: ropey::Rope) {
         let mut buffer = Buffer::new();
-        buffer.load(content, path.clone());
+        buffer.load(rope, path.clone());
         self.buffers.insert(path, buffer);
     }
 

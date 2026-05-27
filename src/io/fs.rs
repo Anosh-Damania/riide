@@ -1,3 +1,4 @@
+use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 
 /// Trait abstracting all file-system operations.
@@ -5,10 +6,10 @@ use std::path::{Path, PathBuf};
 pub trait FileSystemOps {
     /// List all entries in `path`, sorted with directories first.
     fn read_dir_entries(&self, path: &Path) -> Result<Vec<PathBuf>, String>;
-    /// Read the entire contents of a text file.
-    fn read_file(&self, path: &Path) -> Result<String, String>;
-    /// Write `content` to `path`, creating/overwriting the file.
-    fn write_file(&self, path: &Path, content: &str) -> Result<(), String>;
+    /// Read the entire contents of a text file into a Rope.
+    fn read_file(&self, path: &Path) -> Result<ropey::Rope, String>;
+    /// Write the contents of a Rope to `path`, creating/overwriting the file.
+    fn write_file(&self, path: &Path, content: &ropey::Rope) -> Result<(), String>;
 }
 
 /// The real filesystem implementation using `std::fs`.
@@ -37,13 +38,20 @@ impl FileSystemOps for RealFileSystem {
         Ok(paths)
     }
 
-    fn read_file(&self, path: &Path) -> Result<String, String> {
-        std::fs::read_to_string(path)
+    fn read_file(&self, path: &Path) -> Result<ropey::Rope, String> {
+        let file = std::fs::File::open(path)
+            .map_err(|e| format!("Could not open file '{}': {}", path.display(), e))?;
+        let reader = std::io::BufReader::new(file);
+        ropey::Rope::from_reader(reader)
             .map_err(|e| format!("Could not read file '{}': {}", path.display(), e))
     }
 
-    fn write_file(&self, path: &Path, content: &str) -> Result<(), String> {
-        std::fs::write(path, content)
+    fn write_file(&self, path: &Path, content: &ropey::Rope) -> Result<(), String> {
+        let file = std::fs::File::create(path)
+            .map_err(|e| format!("Could not create file '{}': {}", path.display(), e))?;
+        let writer = BufWriter::new(file);
+        content
+            .write_to(writer)
             .map_err(|e| format!("Could not save file '{}': {}", path.display(), e))
     }
 }
@@ -66,7 +74,10 @@ mod tests {
         let fs = RealFileSystem;
         let entries = fs.read_dir_entries(&tmp).expect("read_dir_entries failed");
 
-        assert!(entries.contains(&file_path), "test file should be in the listing");
+        assert!(
+            entries.contains(&file_path),
+            "test file should be in the listing"
+        );
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
@@ -81,9 +92,9 @@ mod tests {
         std::fs::write(&file_path, "Hello, Riide!").expect("failed to write test file");
 
         let fs = RealFileSystem;
-        let content = fs.read_file(&file_path).expect("read_file should succeed");
+        let rope = fs.read_file(&file_path).expect("read_file should succeed");
 
-        assert_eq!(content, "Hello, Riide!");
+        assert_eq!(String::from(&rope), "Hello, Riide!");
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
@@ -99,7 +110,10 @@ mod tests {
         let fs = RealFileSystem;
         let result = fs.read_file(&missing);
 
-        assert!(result.is_err(), "reading a non-existent file should return Err");
+        assert!(
+            result.is_err(),
+            "reading a non-existent file should return Err"
+        );
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
